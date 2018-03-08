@@ -202,22 +202,26 @@ func getCert(options Options) ([]tls.Certificate, error) {
 }
 
 // Client returns a TLS configuration meant to be used by a client.
-func Client(options Options) (*tls.Config, error) {
-	tlsConfig := ClientDefault()
+func Client(options Options, ops ...func(*tls.Config)) (*tls.Config, error) {
+	tlsConfig := ClientDefault(ops...)
 	tlsConfig.InsecureSkipVerify = options.InsecureSkipVerify
 	if !options.InsecureSkipVerify && options.CAFile != "" {
-		CAs, err := certPool(options.CAFile, options.ExclusiveRootPools)
+		if tlsConfig.RootCAs == nil {
+			CAs, err := certPool(options.CAFile, options.ExclusiveRootPools)
+			if err != nil {
+				return nil, err
+			}
+			tlsConfig.RootCAs = CAs
+		}
+	}
+
+	if len(tlsConfig.Certificates) == 0 {
+		tlsCerts, err := getCert(options)
 		if err != nil {
 			return nil, err
 		}
-		tlsConfig.RootCAs = CAs
+		tlsConfig.Certificates = tlsCerts
 	}
-
-	tlsCerts, err := getCert(options)
-	if err != nil {
-		return nil, err
-	}
-	tlsConfig.Certificates = tlsCerts
 
 	if err := adjustMinVersion(options, tlsConfig); err != nil {
 		return nil, err
@@ -227,23 +231,29 @@ func Client(options Options) (*tls.Config, error) {
 }
 
 // Server returns a TLS configuration meant to be used by a server.
-func Server(options Options) (*tls.Config, error) {
-	tlsConfig := ServerDefault()
+func Server(options Options, ops ...func(*tls.Config)) (*tls.Config, error) {
+	tlsConfig := ServerDefault(ops...)
 	tlsConfig.ClientAuth = options.ClientAuth
-	tlsCert, err := tls.LoadX509KeyPair(options.CertFile, options.KeyFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("Could not load X509 key pair (cert: %q, key: %q): %v", options.CertFile, options.KeyFile, err)
-		}
-		return nil, fmt.Errorf("Error reading X509 key pair (cert: %q, key: %q): %v. Make sure the key is not encrypted.", options.CertFile, options.KeyFile, err)
-	}
-	tlsConfig.Certificates = []tls.Certificate{tlsCert}
-	if options.ClientAuth >= tls.VerifyClientCertIfGiven && options.CAFile != "" {
-		CAs, err := certPool(options.CAFile, options.ExclusiveRootPools)
+
+	if len(tlsConfig.Certificates) == 0 {
+		tlsCert, err := tls.LoadX509KeyPair(options.CertFile, options.KeyFile)
 		if err != nil {
-			return nil, err
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("Could not load X509 key pair (cert: %q, key: %q): %v", options.CertFile, options.KeyFile, err)
+			}
+			return nil, fmt.Errorf("Error reading X509 key pair (cert: %q, key: %q): %v. Make sure the key is not encrypted.", options.CertFile, options.KeyFile, err)
 		}
-		tlsConfig.ClientCAs = CAs
+		tlsConfig.Certificates = []tls.Certificate{tlsCert}
+	}
+
+	if options.ClientAuth >= tls.VerifyClientCertIfGiven && options.CAFile != "" {
+		if tlsConfig.RootCAs == nil {
+			CAs, err := certPool(options.CAFile, options.ExclusiveRootPools)
+			if err != nil {
+				return nil, err
+			}
+			tlsConfig.ClientCAs = CAs
+		}
 	}
 
 	if err := adjustMinVersion(options, tlsConfig); err != nil {
